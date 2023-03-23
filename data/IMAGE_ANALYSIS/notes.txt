@@ -1,0 +1,3 @@
+classifiers are trained on the cropped sections of the selected images (there is one from each timepoint).
+
+The batch processing in ilastik doesn't seem to work (?). Therefore instead do the following: Open a trained classifier, then add all the images from Exp16_merged as inputs. Then modify the csv export location inside elastik to wherever, then run "export all". 

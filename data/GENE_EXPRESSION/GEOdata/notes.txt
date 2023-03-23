@@ -1,0 +1,11 @@
+Cytotoxic T Lymphocytes Block Tumor Growth Both by Lytic Activity and IFNγ-Dependent Cell-Cycle Arrest
+Hirokazu Matsushita, Akihiro Hosoi, Satoshi Ueha, Jun Abe, Nao Fujieda, Michio Tomura, Ryuji Maekawa, Kouji Matsushima, Osamu Ohara and Kazuhiro Kakimi
+DOI: 10.1158/2326-6066.CIR-14-0098
+
+Gene expression was measured in the tumor from untreated or ACT mice on day 1, 3, 5 and 7. Gene expression was also measured in the tumor on day 3, 5 and 7 from ACT mice with anti-IFNg or control Rat IgG antibodies treatment.
+
+The microarray data are available from the Gene Expression Omnibus (GEO) database (series accession number GSE57304; sample accession numbers GSM1379331–GSM1379344).
+
+After download, headers were removed from the raw text files so the feature tables can be loaded as CSV files. 
+
+The key.txt (or.csv)  link the files to the conditions/days. 

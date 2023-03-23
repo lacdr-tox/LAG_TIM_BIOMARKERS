@@ -1,0 +1,948 @@
+---
+title: "Parameter estimation"
+author: "Richard J Beck"
+date: "6/13/2022"
+output: html_document
+---
+
+
+This code generates the output for figure 5 and the associated supplementary figures
+  
+Data used by this file can be generated using optim_script.R optim_script_ko.R and run_amphs.R scripts contained in code/utils/  
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir="path/to/LAG_TIM_BIOMARKERS/")
+```
+
+```{r}
+library(pbapply)
+library(parallel)
+library(deSolve)
+library(ggplot2)
+source("code/utils/optim_funcs.R")
+source("code/utils/plotting_funcs.R")
+
+
+## the following just splits up the amphs chain into separate files to get round githubs file size limit
+pack_amphs_chain <- function(chain_path){
+  x <- readRDS(chain_path)
+  lapply(1:length(x), function(i){
+    saveRDS(x[[i]],paste0("data/RESULTS/unpacked_chain/",i,".Rds"))
+  })
+}
+
+unpack_amphs_chain <- function(unpacked_chain_path){
+  fnames <- paste0(unpacked_chain_path,list.files(unpacked_chain_path))
+  x <- lapply(fnames,readRDS)
+  return(x)
+}
+
+chain_path <- "data/RESULTS/all_pars_wider_chain.Rds"
+#pack_amphs_chain(chain_path) I ran this to initially split the chain
+unpacked_chain_path <- "data/RESULTS/unpacked_chain/"
+x <- unpack_amphs_chain(chain_path) ## this will unsplit the chain
+saveRDS(x, chain_path)
+```
+
+Estimate the SD for the inhibitors:
+Approach is to take a list of housekeeping genes (https://doi.org/10.1093/nar/gkaa609) (HRT Atlas v1.0, www.housekeeping.unicamp.br) (Most stable mouse transcripts) and calculate the relationship between their mean and sd in our data.
+
+We get sd = 0.054+0.29*mean
+```{r}
+df <- read.csv("data/GENE_EXPRESSION/PROCESSED/all_gProcessedSignal_BGfiltered.csv")
+
+x <- df[,7:ncol(df)]
+
+q75 <- apply(x,2,quantile)["75%",]
+x <- x/q75
+
+hkg <- read.csv("data/GENE_EXPRESSION/MostStable_Mouse.csv",sep=";")
+
+x <- x[df$GeneName%in%hkg$Gene.name|df$SystematicName%in%hkg$transcript_id,]
+sdx <- apply(x,1,sd)
+mx <- apply(x,1,mean)
+
+x$GeneName <- sapply(1:nrow(x), as.character)
+df <- reshape2::melt(x,id.vars="GeneName")
+df$condition <- sapply(as.character(df$variable), function(i) unlist(strsplit(i,split="_"))[1])
+
+p <- ggplot(df,aes(x=GeneName,y=value,color=condition))+
+  geom_point()+
+  scale_x_discrete("housekeeping genes")+
+  scale_y_log10("expression value")+
+  theme(axis.text.x = element_blank())
+p
+
+mod <- lm(sdx~mx)
+mean_expression <- mx
+stdev_expression <- sdx
+plot(mean_expression,stdev_expression)
+lines(mx,predict(mod,list(mx)))
+
+print(mod)
+
+```
+
+
+check fits
+
+
+```{r}
+base_plot_size=8
+margin_size <- 15
+
+x <- readRDS("data/RESULTS/opt_out_wider_bounds.Rds")
+pars <- do.call(rbind,lapply(x, function(xi) xi$par))
+pz <- readRDS("data/RESULTS/all_pars_wider_chain.Rds")[[1]]$par
+pz <- pz[round(nrow(pz)/2):nrow(pz),1:3]
+pz <- data.frame(exp(pz))
+colnames(pz) <- c("k[l]","k_[t]","k_[p]")
+pz$id <- 1:nrow(pz)
+pz <- reshape2::melt(pz,id.vars=c("id"))
+
+p5f <- ggplot(pz,aes(x=value))+
+  facet_wrap(~variable,scales="free",labeller=label_parsed)+
+  geom_histogram(bins = 20)+
+  #geom_density()+
+  scale_x_log10("parameter value",guide = guide_axis(check.overlap = TRUE))+
+  theme_classic(base_size=base_plot_size)
+p5f
+
+v <- sapply(x, function(xi) xi$value)
+pars <- pars[order(v),]
+v <- v[order(v)]
+
+
+x <- readRDS("data/RESULTS/ko_k_LAG_k_TIM_opt_out.Rds")
+px <- do.call(rbind,lapply(x, function(xi) xi$par))
+vx <- sapply(x, function(xi) xi$value)
+px <- px[vx==min(vx),]
+px[6] <- px[5]
+vx <- vx[order(vx)]
+
+pb <- pars[1,]
+
+x1 <- load_fit("TIM\ndominant",pars[1,])
+x2 <- load_fit("LAG\ndominant",pars[6,])
+
+
+a <- rbind(load_activity("TIM\ndominant",pars[1,]),
+           load_activity("LAG\ndominant",pars[6,]))
+
+##contribution to CTL exhaustedness
+p5e <- ggplot(a,aes(x=time,y=value,color=variable))+
+  facet_grid(cols=vars(id))+
+  geom_line()+
+  scale_y_continuous("relative contribution\nto exhaustion")+
+  scale_x_continuous("days after CTL transfer")+
+  scale_color_discrete("",labels=c("PD1/PDL1","Lag3","Tim3"))+
+  theme_classic(base_size=base_plot_size)
+p5e
+
+## CTL activity
+p5d <- ggplot(a,aes(x=time,y=E_activ,color=id,linetype=id,size=id))+
+  geom_line()+
+  scale_y_continuous("CTL activity")+
+  scale_x_continuous("days after CTL transfer")+
+  scale_color_manual("",values=c("#006BFF","#FF0505"))+
+  scale_linetype_manual("",values=c(5,3))+
+  scale_size_manual("",values=c(1,1.3))+
+  theme_classic(base_size=base_plot_size)
+p5d
+
+
+df <- rbind(x1$df,x2$df)
+df_inh <- rbind(x1$df_inh,x2$df_inh)
+
+
+d0 <- setup_opt(path = "data/PAR_EST/")
+dat <- reshape_data(d0$dat)
+dat1 <- dat[dat$variable%in%c("LAG3","TIM3","PD1","PDL1"),]
+dat <- dat[!dat$variable%in%c("LAG3","TIM3","PD1","PDL1"),]
+
+dfv <- data.frame(logL = -v, id=1:length(v))
+
+dfp <- data.frame(exp(pars[1:11,]))
+colnames(dfp) <- parnames
+dfp$id <- 1:nrow(dfp)
+dfp$logL <- -v[1:nrow(dfp)]
+
+dfp <- reshape2::melt(dfp,id.vars=c("id","logL"))
+
+pp <- ggplot(dfp,aes(x=variable,y=value))+
+  geom_jitter(height=0,width=0.1)+
+  scale_y_log10("parameter value")+
+  scale_x_discrete("")+
+  theme_bw()
+pp
+
+
+pv1 <- ggplot(dfv,aes(x=id,y=-logL))+
+  geom_point()+
+  scale_x_log10("number of repeats")+
+  scale_y_log10("log likelihood")+
+  theme_bw()
+pv1
+
+pv2 <- ggplot(head(dfv,21),aes(x=id,y=logL))+
+  geom_point()+
+  scale_x_continuous("number of repeats")+
+  scale_y_continuous("log likelihood")+
+  theme_bw()
+pv2
+
+id_renamr <- c(E="CTLs",g="g (day^-1)",gr="S-G2-M:G1",IFN="Ifng",
+  LAG3="Lag3",TIM3="Tim3",PD1="PD-1",PDL1="PD-L1")
+
+df$variable <- id_renamr[as.character(df$variable)]
+dat$variable <- id_renamr[as.character(dat$variable)]
+
+p5b <- ggplot(df)+
+  facet_grid(rows=vars(variable),scales="free",labeller = label_parsed)+
+  geom_line(aes(x=time,y=value,color=id,linetype=id,size=id),show.legend=F)+
+  geom_point(data=dat,aes(x=day,y=mean))+
+  geom_errorbar(data=dat,aes(x=day,ymin=mean-sd,ymax=mean+sd))+
+  scale_x_continuous("days")+
+  scale_color_manual("",values=c("#006BFF","#FF0505"))+
+  scale_linetype_manual("",values=c(5,3))+
+  scale_size_manual("",values=c(0.8,1))+
+  theme_classic(base_size=base_plot_size)+
+  theme(plot.margin = margin(4,4,4,8, "pt"))
+p5b
+
+df_inh$variable <- id_renamr[as.character(df_inh$variable)]
+dat1$variable <- id_renamr[as.character(dat1$variable)]
+
+p5c <- ggplot(df_inh)+
+  facet_grid(rows=vars(variable),scales="free")+
+  geom_line(aes(x=time,y=value,color=id,linetype=id,size=id))+
+  geom_point(data=dat1,aes(x=day,y=mean))+
+  geom_errorbar(data=dat1,aes(x=day,ymin=mean-sd,ymax=mean+sd))+
+    scale_x_continuous("days")+
+  scale_color_manual("",values=c("#006BFF","#FF0505"))+
+  scale_linetype_manual("",values=c(5,3))+
+  scale_size_manual("",values=c(0.8,1))+
+  theme_classic(base_size=base_plot_size)
+p5c
+
+
+```
+
+```{r}
+base_plot_size=10
+margin_size <- 15
+x <- readRDS("data/RESULTS/all_pars_wider_chain.Rds")[[1]]
+par <- data.frame(exp(x$par))
+par <- par[round(nrow(par)/2):nrow(par),]
+
+x <- par
+
+par$id <- 1:nrow(par)
+
+par <- reshape2::melt(par,id.vars="id")
+
+levels(par$variable) <- c(k_LAG="k[l]",k_TIM="k[t]",k_PD="k[p]",k_inf="s[0]",
+                          k_exp="s[e]",de="d[e]",d_lag="d[l]",d_tim="d[t]",
+                          d_pd1="d[p]",d_pdl1="d[pl]",d_ifn="d[i]",
+                          k_ifn="k[i]",ke="k[e]")[levels(par$variable)]
+p <- ggplot(par,aes(x=value))+
+  facet_wrap(~variable,scales="free",labeller=label_parsed)+
+  geom_histogram(bins = 20)+
+  #geom_density()+
+  scale_x_log10("parameter value",guide = guide_axis(check.overlap = TRUE))+
+  theme_classic()
+p
+
+p2 <- ggplot(x,aes(x=k_LAG,y=k_TIM))+
+  #geom_point(alpha=0.1)+
+  geom_bin_2d()+
+  scale_x_log10(expression(Lag3~strength~(k[l])),breaks=c(0.001,0.1,10))+
+  scale_y_log10(expression(atop("Tim3 strength",(k[t]))),breaks=c(0.001,0.1,10))+
+  theme_classic(base_size=base_plot_size)+
+  scale_fill_viridis_c("MCMC\nsamples")+
+  theme(plot.margin = margin(3,3,3,3, "pt"),legend.key.size = unit(10,"pt"))
+p2
+
+p <- ggplot(x,aes(x=k_LAG,y=d_lag))+
+  #geom_point(alpha=0.1)+
+  geom_bin_2d()+
+  scale_x_log10(expression(Lag3~inhibitor~strength~k[l]))+
+  scale_y_log10(expression(d[l]))+
+  theme_classic()+
+  scale_fill_viridis_c("MCMC\nsamples")
+p
+p <- ggplot(x,aes(x=k_TIM,y=d_tim))+
+  #geom_point(alpha=0.1)+
+  geom_bin_2d()+
+  scale_x_log10(expression(k[t]))+
+  scale_y_log10(expression(d[t]))+
+  theme_classic()+
+  scale_fill_viridis_c()
+p
+
+p <- ggplot(x,aes(x=ke,y=d_pd1))+
+  #geom_point(alpha=0.1)+
+  geom_bin_2d()+
+  scale_x_log10(expression(k[e]))+
+  scale_y_log10(expression(d[p]))+
+  theme_classic()+
+  scale_fill_viridis_c()
+p
+
+p1 <- ggplot(par[par$variable%in%c("k[l]","k[t]","k[p]"),],aes(x=value))+
+  facet_wrap(~variable,ncol=1,labeller=label_parsed)+
+  geom_histogram(bins = 20)+
+  #geom_density()+
+  scale_x_log10("",guide = guide_axis(check.overlap = TRUE))+
+  scale_y_continuous("MCMC samples")+
+  theme_classic(base_size=base_plot_size)+
+  theme(plot.margin = margin(3,3,3,5, "pt"))
+p1
+
+
+aic <- readRDS("data/RESULTS/aic_dataset.Rds")
+
+paic <- ggplot(aic,aes(x=aic,y=id))+
+  geom_col()+
+  scale_y_discrete("")+
+  scale_x_continuous("AIC")+
+  theme_classic(base_size = base_plot_size)+
+  theme(plot.margin = margin(3,3,3,5, "pt"))
+paic
+
+
+
+
+```
+
+Various knockout experiments
+
+```{r}
+
+tmp <- function(fixpars){
+  parnames <- c("k_LAG","k_TIM","k_PD",
+              "k_inf","k_exp","de",
+              "d_lag","d_tim","d_pd1","d_pdl1", "d_ifn",
+              "k_ifn","ke")
+  
+  p1 <- pars[1,]
+  p2 <- pars[6,]
+  names(p1) <- parnames
+  names(p2) <- parnames
+  
+  if(!is.null(fixpars)){
+    p1 <- p1[!names(p1)%in%names(fixpars)]
+    p2 <- p2[!names(p2)%in%names(fixpars)]
+  }
+  
+  x1 <- load_fit("TIM\ndominant",p1,fixpars=fixpars)
+  x2 <- load_fit("LAG\ndominant",p2,fixpars=fixpars)
+
+  df <- rbind(x1$df,x2$df)
+  dfi <- rbind(x1$df_inh,x2$df_inh)
+  
+  if(is.null(fixpars)) fixpars=c(none=0)
+  df$fixpars <- names(fixpars)
+  dfi$fixpars <- names(fixpars)
+  list(df=df,dfi=dfi)
+}
+
+base_plot_size=10
+
+
+x <- readRDS("data/RESULTS/opt_out_wider_bounds.Rds")
+
+
+pars <- do.call(rbind,lapply(x, function(xi) xi$par))
+v <- sapply(x, function(xi) xi$value)
+pars <- pars[order(v),]
+v <- v[order(v)]
+
+
+x <- readRDS("data/RESULTS/ko_k_LAG_k_TIM_opt_out.Rds")
+px <- do.call(rbind,lapply(x, function(xi) xi$par))
+vx <- sapply(x, function(xi) xi$value)
+px <- px[vx==min(vx),]
+px[6] <- px[5]
+vx <- vx[order(vx)]
+
+pb <- pars[1,]
+
+x0 <- tmp(NULL)
+x1 <- tmp(fixpars=c(k_LAG=0))
+x2 <- tmp(fixpars=c(k_TIM=0))
+x3 <- tmp(fixpars=c(k_PD=0))
+
+df <- rbind(x0$df,x1$df,x2$df,x3$df)
+dfi <- rbind(x0$dfi,x1$dfi,x2$dfi,x3$dfi)
+d0 <- setup_opt(path = "data/PAR_EST/")
+dat <- reshape_data(d0$dat)
+dat1 <- dat[dat$variable%in%c("LAG3","TIM3","PD1","PDL1"),]
+dat <- dat[!dat$variable%in%c("LAG3","TIM3","PD1","PDL1"),]
+
+fixpar_renamr <- c(k_LAG="k[l]==0",
+                   k_TIM="k[t]==0",
+                   k_PD="k[p]==0",
+                   none="full \nmodel")
+
+df$fixpars <- fixpar_renamr[df$fixpars]
+dfi$fixpars <- fixpar_renamr[dfi$fixpars]
+
+id_renamr <- c(E="CTLs",g="g (day^-1)",gr="S-G2-M:G1",IFN="Ifng",
+  LAG3="Lag3",TIM3="Tim3",PD1="PD-1",PDL1="PD-L1")
+
+df$variable <- id_renamr[as.character(df$variable)]
+dat$variable <- id_renamr[as.character(dat$variable)]
+dfi$variable <- id_renamr[as.character(dfi$variable)]
+dat1$variable <- id_renamr[as.character(dat1$variable)]
+
+s1a <- ggplot(df)+
+  facet_grid(rows=vars(variable),cols=vars(fixpars),scales="free",labeller = "label_parsed")+
+  geom_line(aes(x=time,y=value,color=id,linetype=id,size=id))+
+  geom_point(data=dat,aes(x=day,y=mean))+
+  geom_errorbar(data=dat,aes(x=day,ymin=mean-sd,ymax=mean+sd))+
+    scale_x_continuous("days")+
+  scale_color_manual("",values=c("#006BFF","#FF0505"))+
+  scale_linetype_manual("",values=c(5,3))+
+  scale_size_manual("",values=c(0.8,1))+
+  theme_classic(base_size=base_plot_size)
+s1a
+
+s2a <- ggplot(dfi)+
+  facet_grid(rows=vars(variable),cols=vars(fixpars),scales="free",labeller = "label_parsed")+
+  geom_line(aes(x=time,y=value,color=id,linetype=id,size=id))+
+  geom_point(data=dat1,aes(x=day,y=mean))+
+  geom_errorbar(data=dat1,aes(x=day,ymin=mean-sd,ymax=mean+sd))+
+    scale_x_continuous("days")+
+  scale_color_manual("",values=c("#006BFF","#FF0505"))+
+  scale_linetype_manual("",values=c(5,3))+
+  scale_size_manual("",values=c(0.8,1))+
+  theme_classic(base_size=base_plot_size)
+s2a
+
+```
+
+Re-running of simulations to determine importance of killing & antiproliferative:
+```{r}
+
+tmp <- function(id){
+  
+  ix <- 1
+  if(id=="LAG\ndominant") ix <- 8
+  
+  x0 <- run_model(pars[ix,])
+  x0$id <- "full\nmodel"
+  x1 <- run_model(pars[ix,],fixpars=c(ke=0))
+  x1$id <- "only\nantiprolif."
+  x2 <- run_model(pars[ix,],fixpars=c(k_ifn=0))
+  x2$id <- "only\nkilling"
+
+  df <- rbind(x0,x1,x2)
+  df <- df[,c("time","SG2M","G1","id")]
+  df$total <- df$G1+df$SG2M
+  df <- reshape2::melt(df,id.vars=c("time","id"))
+  df$id2 <- id
+  return(df)
+}
+
+base_plot_size=10
+
+
+x <- readRDS("data/RESULTS/opt_out_wider_bounds.Rds")
+
+
+pars <- do.call(rbind,lapply(x, function(xi) xi$par))
+v <- sapply(x, function(xi) xi$value)
+pars <- pars[order(v),]
+v <- v[order(v)]
+
+a1 <- load_activity("TIM\ndominant",pars[1,])
+a1$ke <- pars[1,ncol(pars)]
+a2 <- load_activity("LAG\ndominant",pars[6,])
+a2$ke <- pars[6,ncol(pars)]
+
+a <- rbind(a1,a2)
+a$killing <- a$E_activ*exp(a$ke)
+
+s1a <- ggplot(a,aes(x=time,y=killing,color=id,linetype=id,size=id))+
+  geom_line()+
+  scale_y_continuous(expression(killing~rate~(CTL^-1~day^-1)))+
+  scale_x_continuous("day after CTL transfer")+
+  scale_color_manual("",values=c("#006BFF","#FF0505"))+
+  scale_linetype_manual("",values=c(5,3))+
+  scale_size_manual("",values=c(0.8,1))+
+  theme_classic(base_size = base_plot_size)
+s1a
+
+df <- rbind(tmp("TIM\ndominant"),tmp("LAG\ndominant"))
+
+
+s1c <- ggplot(df,aes(x=time,y=value,color=variable))+
+  facet_grid(rows=vars(id),cols=vars(id2))+
+  geom_line()+
+  scale_y_log10("tumour cells")+
+  scale_color_manual("",values=c("green","red","blue"))+
+  scale_x_continuous("day after CTL transfer")+
+  theme_classic(base_size = base_plot_size)+
+  theme(legend.position = "top")
+s1c
+
+s1b <- ggplot(df[df$variable=="total",],aes(x=time,y=value,color=id,linetype=id))+
+  facet_grid(rows=vars(id2))+
+  geom_line()+
+  scale_y_log10("tumour cells")+
+  scale_x_continuous("day after CTL transfer")+
+  scale_color_discrete("")+
+  scale_linetype_manual("",values=c("longdash","dotted","solid"))+
+  theme_classic(base_size = base_plot_size)
+s1b
+
+
+
+
+```
+
+Practical identifiability
+
+
+
+```{r}
+
+base_plot_size=10
+margin_size <- 15
+x <- readRDS("data/RESULTS/all_pars_wider_chain.Rds")[[1]]
+par <- data.frame(exp(x$par))
+par <- par[round(nrow(par)/2):nrow(par),]
+
+x <- par
+
+par$id <- 1:nrow(par)
+
+par <- reshape2::melt(par,id.vars="id")
+
+levels(par$variable) <- c(k_LAG="k[l]",k_TIM="k[t]",k_PD="k[p]",k_inf="s[0]",
+                          k_exp="s[e]",de="d[e]",d_lag="d[l]",d_tim="d[t]",
+                          d_pd1="d[p]",d_pdl1="d[pl]",d_ifn="d[i]",
+                          k_ifn="k[i]",ke="k[e]")[levels(par$variable)]
+
+
+### Construct df to get confidence intervals
+
+parnames <- c("k_LAG","k_TIM","k_PD",
+                "k_inf","k_exp","de",
+                "d_lag","d_tim","d_pd1","d_pdl1", "d_ifn",
+                "k_ifn","ke")
+
+df <- data.frame(variable=parnames,identifiable=c("r","r","r","r","y","y",
+                                         "n","n","n","n","y","y","n"))
+
+q <- do.call(rbind,lapply(unique(par$variable), function(v){
+  quantile(par$value[par$variable==v],probs=c(0,0.01,0.99,1))
+}))
+
+q <- data.frame(do.call(rbind,lapply(1:nrow(q), function(i){
+  if(df$identifiable[i]=="r") return(q[i,c(1,3)])
+  if(df$identifiable[i]=="l") return(q[i,c(2,4)])
+  if(df$identifiable[i]=="y") return(q[i,c(2,3)])
+  if(df$identifiable[i]=="n") return(q[i,c(1,4)])
+})))
+
+colnames(q) <- c("lower","upper")
+
+df <- cbind(df,q)
+df$y <- 2000
+df$variable <- c(k_LAG="k[l]",k_TIM="k[t]",k_PD="k[p]",k_inf="s[0]",
+                          k_exp="s[e]",de="d[e]",d_lag="d[l]",d_tim="d[t]",
+                          d_pd1="d[p]",d_pdl1="d[pl]",d_ifn="d[i]",
+                          k_ifn="k[i]",ke="k[e]")[df$variable]
+df2 <- df
+df <- reshape2::melt(df,id.vars=c("variable","identifiable","y"))
+colnames(df)[4]<-"bound"
+df <- df[df$identifiable!="n",]
+
+
+
+df <- df[!(df$identifiable=="r"&df$bound=="lower"),]
+df <- df[!(df$identifiable=="l"&df$bound=="upper"),]
+p <- ggplot(par)+
+  facet_wrap(~variable,nrow=3,scales="free",labeller=label_parsed)+
+  geom_histogram(bins = 20,aes(x=value))+
+  geom_vline(data=df,aes(xintercept=value),color="red")+
+  scale_x_log10("parameter value",guide = guide_axis(check.overlap = TRUE))+
+  scale_y_continuous("MCMC samples")+
+  theme_classic()
+p
+
+
+```
+
+```{r}
+base_plot_size=10
+
+x <- readRDS("data/RESULTS/opt_out_wider_bounds.Rds")
+pars <- do.call(rbind,lapply(x, function(xi) xi$par))
+v <- sapply(x, function(xi) xi$value)
+pars <- pars[v==min(v),]
+
+names(pars)<- c("k_LAG","k_TIM","k_PD",
+                "k_inf","k_exp","de",
+                "d_lag","d_tim","d_pd1",
+                "d_pdl1", "d_ifn",
+                "k_ifn","ke")
+
+y <- rbind(sweep_par(pb = pars,sweep = "d_pd1"),
+           sweep_par(pb = pars,sweep = "d_pdl1"),
+           sweep_par(pb = pars,sweep = "d_lag"),
+           sweep_par(pb = pars,sweep = "d_tim"))
+
+yrenamr <- c(d_pd1="d[p]",d_pdl1="d[pl]",d_lag="d[l]",d_tim="d[t]")
+
+y$swept <- yrenamr[y$swept]
+#y$swept <- sapply(y$swept,as.expression)
+
+s5a <- ggplot(y,aes(x=exp(parval),y=ll,color=swept))+
+  geom_line()+
+  scale_y_continuous("negative logL",limits=c(2.8,10))+
+  scale_x_log10("checkpoint disappearance rate")+
+  scale_color_discrete("",labels=c(expression(d[l]),
+                                   expression(d[p]),
+                                   expression(d[pl]),
+                                   expression(d[t])))+
+  theme_classic(base_size=base_plot_size)
+s5a
+
+x <- readRDS("data/RESULTS/all_pars_wider_chain.Rds")[[1]]
+
+par <- data.frame(x$par)
+par <- par[round(nrow(par)/2):nrow(par),]
+Nruns <- 500
+
+
+ids <- sample(1:nrow(par),Nruns)
+
+
+df <- lapply(1:Nruns, function(id) load_fit(as.character(id), par[id,]))
+ll <- do.call(rbind,lapply(df, function(di) di$dfll))
+pll <- ggplot(ll,aes(x=ll,y=llko))+
+  geom_point(alpha=0.5)+
+  scale_x_log10()+
+  scale_y_log10()+
+  geom_abline()
+pll
+
+
+par <- exp(par)
+x <- par
+par$id <- 1:nrow(par)
+
+par <- reshape2::melt(par,id.vars="id")
+
+levels(par$variable) <- c(k_LAG="k[l]",k_TIM="k[t]",k_PD="k[p]",k_inf="s[0]",
+                          k_exp="s[e]",de="d[e]",d_lag="d[l]",d_tim="d[t]",
+                          d_pd1="d[p]",d_pdl1="d[pl]",d_ifn="d[i]",
+                          k_ifn="k[i]",ke="k[e]")[levels(par$variable)]
+s4a <- ggplot(par,aes(x=value))+
+  facet_wrap(~variable,scales="free",ncol = 5,labeller=label_parsed)+
+  geom_histogram(bins = 20)+
+  #geom_density()+
+  scale_x_log10("parameter value",guide = guide_axis(check.overlap = TRUE))+
+  scale_y_continuous("MCMC samples")+
+  theme_classic(base_size=base_plot_size)
+s4a
+
+s5b <- ggplot(x,aes(x=k_LAG,y=d_lag))+
+  #geom_point(alpha=0.1)+
+  geom_bin_2d(show.legend=F)+
+  scale_x_log10(expression(Lag3~inhibitor~strength~k[l]))+
+  scale_y_log10(expression(Lag3~decay~rate~d[l]))+
+  theme_classic()+
+  scale_fill_viridis_c("MCMC\nsamples")
+s5b
+s5c <- ggplot(x,aes(x=k_TIM,y=d_tim))+
+  #geom_point(alpha=0.1)+
+  geom_bin_2d()+
+  scale_x_log10(expression(Tim3~inhibitor~strength~k[t]))+
+  scale_y_log10(expression(Tim3~decay~rate~d[t]))+
+  theme_classic()+
+  scale_fill_viridis_c("MCMC\nsamples")
+s5c
+
+df_inh <- do.call(rbind,lapply(df, function(di) di$df_inh))
+df <- do.call(rbind,lapply(df, function(di) di$df))
+
+d0 <- setup_opt(path = "data/PAR_EST/")
+dat <- reshape_data(d0$dat)
+dat1 <- dat[dat$variable%in%c("LAG3","TIM3","PD1","PDL1"),]
+dat <- dat[!dat$variable%in%c("LAG3","TIM3","PD1","PDL1"),]
+df$value[df$variable=="IFN"&df$value>3] <- NaN
+
+id_renamr <- c(E="CTLs",g="g (day^-1)",gr="S-G2-M:G1",IFN="Ifng",
+  LAG3="Lag3",TIM3="Tim3",PD1="PD1",PDL1="PDL1")
+df$variable <- id_renamr[as.character(df$variable)]
+dat$variable <- id_renamr[as.character(dat$variable)]
+s5d <- ggplot(df)+
+  facet_grid(rows=vars(variable),scales="free")+
+  geom_line(aes(x=time,y=value,group=id),alpha=0.1)+
+  geom_point(data=dat,aes(x=day,y=mean))+
+  geom_errorbar(data=dat,aes(x=day,ymin=mean-sd,ymax=mean+sd))+
+  theme_classic(base_size=base_plot_size)
+s5d
+
+s5e <- ggplot(df_inh)+
+  facet_grid(rows=vars(variable),scales="free")+
+  geom_line(aes(x=time,y=value,group=id),alpha=0.1)+
+  geom_point(data=dat1,aes(x=day,y=mean))+
+  geom_errorbar(data=dat1,aes(x=day,ymin=mean-sd,ymax=mean+sd))+
+  theme_classic(base_size=base_plot_size)
+s5e
+
+top_row <- cowplot::plot_grid(s5a,labels="A")
+middle_row <- cowplot::plot_grid(s5b,s5c,nrow=1,labels=c("B","C"),rel_widths = c(2.2,3))
+bottom_row <- cowplot::plot_grid(s5d,s5e,nrow=1,labels=c("D","E"))
+
+s5 <- cowplot::plot_grid(top_row,middle_row,bottom_row,nrow=3,rel_heights=c(3,3,4))
+
+```
+Study whether color coding s5E helps answer reviewer comment:
+
+```{r}
+base_plot_size=10
+x <- readRDS("data/RESULTS/all_pars_wider_chain.Rds")[[1]]
+
+par <- data.frame(x$par)
+par <- par[round(nrow(par)/2):nrow(par),]
+
+Nruns <- 100
+ids <- sample(1:nrow(par),Nruns)
+parsample <- par[ids[1:Nruns],]
+
+df <- pbapply::pblapply(1:Nruns, function(id) load_fit(as.character(id), parsample[id,]))
+ll <- do.call(rbind,lapply(df, function(di) di$dfll))
+parsample <- exp(parsample)
+x <- parsample
+parsample$id <- 1:nrow(parsample)
+
+df_inh <- do.call(rbind,lapply(df, function(di) di$df_inh))
+df_inh$dp <- parsample$d_pd1[as.numeric(df_inh$id)]
+df_inh$d_tim <- parsample$d_tim[as.numeric(df_inh$id)]
+df_inh$d_lag <- parsample$d_lag[as.numeric(df_inh$id)]
+df <- do.call(rbind,lapply(df, function(di) di$df))
+df$dp <- parsample$d_pd1[as.numeric(df$id)]
+df$d_tim <- parsample$d_tim[as.numeric(df$id)]
+df$d_lag <- parsample$d_lag[as.numeric(df$id)]
+
+
+
+d0 <- setup_opt(path = "data/PAR_EST/")
+dat <- reshape_data(d0$dat)
+dat1 <- dat[dat$variable%in%c("LAG3","TIM3","PD1","PDL1"),]
+dat <- dat[!dat$variable%in%c("LAG3","TIM3","PD1","PDL1"),]
+df$value[df$variable=="IFN"&df$value>3] <- NaN
+
+id_renamr <- c(E="CTLs",g="g (day^-1)",gr="S-G2-M:G1",IFN="Ifng",
+  LAG3="Lag3",TIM3="Tim3",PD1="PD1",PDL1="PDL1")
+df$variable <- id_renamr[as.character(df$variable)]
+dat$variable <- id_renamr[as.character(dat$variable)]
+
+df$col.id <- "c1"
+df_inh$col.id <- "c2"
+
+df <- rbind(df,df_inh)
+
+
+
+```
+
+
+```{r}
+alpha <- 0.6
+df <- df[order(df$dp),]
+datx <- rbind(dat,dat1)
+
+df$var_f <- factor(df$variable,levels=c("CTLs", "Ifng", "g (day^-1)", "S-G2-M:G1", 
+                                        "LAG3", "TIM3", "PD1","PDL1"))
+datx$var_f <- factor(datx$variable,levels=c("CTLs", "Ifng", "g (day^-1)", "S-G2-M:G1", 
+                                        "LAG3", "TIM3", "PD1","PDL1"))
+
+s6a <- ggplot(df)+
+  facet_wrap(~var_f,ncol=4,dir = "h",scales="free",labeller = label_parsed)+
+  geom_line(aes(x=time,y=value,group=id,color=dp),alpha=alpha)+
+  geom_point(data=datx,aes(x=day,y=mean))+
+  geom_errorbar(data=datx,aes(x=day,ymin=mean-sd,ymax=mean+sd))+
+  theme_classic(base_size=base_plot_size)+
+  scale_color_viridis_c(expression(d[p]),trans="log",breaks=c(0.06,0.4,3,20))
+s6a
+
+
+df <- df[order(df$d_lag),]
+
+s6b <- ggplot(df)+
+  facet_wrap(~var_f,ncol=4,dir = "h",scales="free",labeller = label_parsed)+
+  geom_line(aes(x=time,y=value,group=id,color=d_lag),alpha=alpha)+
+  geom_point(data=datx,aes(x=day,y=mean))+
+  geom_errorbar(data=datx,aes(x=day,ymin=mean-sd,ymax=mean+sd))+
+  theme_classic(base_size=base_plot_size)+
+  scale_color_viridis_c(expression(d[l]),trans="log",breaks=c(0.06,0.4,3,20))
+s6b
+
+df <- df[order(df$d_tim),]
+
+s6c <- ggplot(df)+
+  facet_wrap(~var_f,ncol=4,dir = "h",scales="free",labeller = label_parsed)+
+  geom_line(aes(x=time,y=value,group=id,color=d_tim),alpha=alpha)+
+  geom_point(data=datx,aes(x=day,y=mean))+
+  geom_errorbar(data=datx,aes(x=day,ymin=mean-sd,ymax=mean+sd))+
+  theme_classic(base_size=base_plot_size)+
+  scale_color_viridis_c(expression(d[t]),trans="log",breaks=c(0.06,0.4,3,20))
+s6c
+
+s6 <- cowplot::plot_grid(s6a,s6b,s6c,nrow=3,labels = c("A","B","C"))
+
+```
+
+Inhibitor behaviour study
+
+
+```{r}
+base_plot_size <- 12
+ff <- c("ko_k_LAG_k_PD_opt_out.Rds","ko_k_LAG_k_TIM_opt_out.Rds",
+        "ko_k_TIM_k_PD_opt_out.Rds","opt_out_wider_bounds.Rds",
+        "ko_k_TIM_k_PD_k_LAG_opt_out.Rds")
+ids <- c("Tim3","PD1/PDL1","Lag3","all","none")
+fixpars <- list(c(k_LAG=0,k_PD=0),
+                c(k_LAG=0,k_TIM=0),
+                c(k_TIM=0,k_PD=0),
+                NULL,
+                c(k_TIM=0,k_PD=0,k_LAG=0))
+
+best <- lapply(ff,function(ffi){
+  x <- readRDS(paste0("data/RESULTS/",ffi))
+  v <- sapply(x, function(xi) xi$value)
+  
+  x[[which.min(v)]]
+})
+
+
+best_fits <- lapply(1:length(best), function(i){
+  id <- ids[i]
+  pars <- best[[i]]$par
+  fp <- fixpars[[i]]
+  load_fit(id,pars,fp)
+  
+})
+
+df <- do.call(rbind,lapply(best_fits,function(bi) bi$df))
+df_inh <- do.call(rbind,lapply(best_fits,function(bi) bi$df_inh))
+
+aic <- do.call(rbind,lapply(best,function(bi){
+  npar <- length(bi$par)
+  ll <- -bi$value
+  aic <- 2*npar-2*ll
+  data.frame(npar,ll,aic)
+}))
+
+aic$id <- ids
+
+d0 <- setup_opt(path = "data/PAR_EST/")
+dat <- reshape_data(d0$dat)
+dat1 <- dat[dat$variable%in%c("LAG3","TIM3","PD1","PDL1"),]
+dat <- dat[!dat$variable%in%c("LAG3","TIM3","PD1","PDL1"),]
+id_renamr <- c(E="CTLs",g="g (day^-1)",gr="S-G2-M:G1",IFN="Ifng",
+  LAG3="Lag3",TIM3="Tim3",PD1="PD-1",PDL1="PD-L1")
+
+df$variable <- id_renamr[as.character(df$variable)]
+dat$variable <- id_renamr[as.character(dat$variable)]
+
+s3a <- ggplot(df)+
+  facet_grid(rows=vars(variable),scales="free",labeller = label_parsed)+
+  geom_line(aes(x=time,y=value,color=id,linetype=id,size=id),show.legend = F)+
+  geom_point(data=dat,aes(x=day,y=mean))+
+  geom_errorbar(data=dat,aes(x=day,ymin=mean-sd,ymax=mean+sd))+
+    scale_x_continuous("days")+
+  theme_classic()+
+    scale_linetype_manual("",values=c("solid","dashed","solid","solid","dotted"))+
+  scale_color_manual("",values=c("#000000","#006BFF","#07FF50","#B96BB2","#FF0505"))+
+  scale_size_manual("",values=c(0.8,1.2,0.8,0.8,1.2))
+s3a
+
+df_inh$variable <- id_renamr[as.character(df_inh$variable)]
+dat1$variable <- id_renamr[as.character(dat1$variable)]
+
+s3b <- ggplot(df_inh)+
+  facet_grid(rows=vars(variable),scales="free")+
+  geom_line(aes(x=time,y=value,color=id,linetype=id,size=id))+
+  geom_point(data=dat1,aes(x=day,y=mean))+
+  geom_errorbar(data=dat1,aes(x=day,ymin=mean-sd,ymax=mean+sd))+
+    scale_x_continuous("days")+
+  scale_linetype_manual("",values=c("solid","dashed","solid","solid","dotted"))+
+  scale_color_manual("",values=c("#000000","#006BFF","#07FF50","#B96BB2","#FF0505"))+
+  scale_size_manual("",values=c(0.8,1,0.8,0.8,1))+
+  theme_classic()
+s3b
+
+s3 <- cowplot::plot_grid(s3a,s3b,nrow=1,labels=c("A","B"),rel_widths = c(2.2,3))
+
+
+
+
+
+
+
+```
+
+
+
+
+```{r}
+
+
+pars['d_pdl1'] <- pars['d_pdl1']+4
+
+
+x1 <- load_fit("TIM\ndominant",pars)
+
+df <- x1$df
+df_inh <- x1$df_inh
+
+d0 <- setup_opt(path = "data/PAR_EST/")
+dat <- reshape_data(d0$dat)
+dat1 <- dat[dat$variable%in%c("LAG3","TIM3","PD1","PDL1"),]
+dat <- dat[!dat$variable%in%c("LAG3","TIM3","PD1","PDL1"),]
+
+
+id_renamr <- c(E="CTLs",g="g (day^-1)",gr="S-G2-M:G1",IFN="Ifng",
+  LAG3="Lag3",TIM3="Tim3",PD1="PD-1",PDL1="PD-L1")
+
+df$variable <- id_renamr[as.character(df$variable)]
+dat$variable <- id_renamr[as.character(dat$variable)]
+
+p5b <- ggplot(df)+
+  facet_grid(rows=vars(variable),scales="free",labeller = label_parsed)+
+  geom_line(aes(x=time,y=value,color=id,linetype=id,size=id),show.legend=F)+
+  geom_point(data=dat,aes(x=day,y=mean))+
+  geom_errorbar(data=dat,aes(x=day,ymin=mean-sd,ymax=mean+sd))+
+    scale_x_continuous("days")+
+  scale_color_manual("",values=c("#006BFF","#FF0505"))+
+  scale_linetype_manual("",values=c(5,3))+
+  scale_size_manual("",values=c(0.8,1))+
+  theme_classic(base_size=base_plot_size)
+p5b
+
+df_inh$variable <- id_renamr[as.character(df_inh$variable)]
+dat1$variable <- id_renamr[as.character(dat1$variable)]
+
+p5c <- ggplot(df_inh)+
+  facet_grid(rows=vars(variable),scales="free")+
+  geom_line(aes(x=time,y=value,color=id,linetype=id,size=id))+
+  geom_point(data=dat1,aes(x=day,y=mean))+
+  geom_errorbar(data=dat1,aes(x=day,ymin=mean-sd,ymax=mean+sd))+
+    scale_x_continuous("days")+
+  scale_color_manual("",values=c("#006BFF","#FF0505"))+
+  scale_linetype_manual("",values=c(5,3))+
+  scale_size_manual("",values=c(0.8,1))+
+  theme_classic(base_size=base_plot_size)
+p5c
+
+print(x1$dfll)
+```
+

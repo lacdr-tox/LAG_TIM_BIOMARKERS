@@ -1,0 +1,140 @@
+---
+title: "data analysis"
+author: "R.J. Beck"
+date: "17/08/2020"
+output: html_document
+---
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_knit$set(root.dir="path/to/LAG_TIM_BIOMARKERS/")
+require(ggplot2)
+
+
+```
+
+
+```{r,eval=FALSE}
+
+source("../code/utils/geo-unpacking.R")
+
+```
+
+```{r}
+
+gene_groupa <- function(gene){
+  if(gene%in%c("Ifng")) return("early")
+  if(gene%in%c("Cd274","Pdcd1")) return("mid")
+  if(gene%in%c("Lag3","Havcr2")) return("late")
+}
+
+df <- read.csv("GENE_EXPRESSION/PROCESSED/all_gProcessedSignal_BGfiltered.csv")
+x <- df[,7:ncol(df)]
+
+norm<-"quantile"
+
+if(norm=="quantile"){
+  q75 <- apply(x,2,quantile)["75%",]
+  x <- x/q75
+}
+
+if(norm=="gapdh"){
+  gapdh <- as.numeric(x[df$GeneName == "Gapdh",])
+  x <- x/gapdh
+}
+
+x$GeneName <- df$GeneName
+x$FeatureNum <- df$FeatureNum
+x <- x[x$GeneName%in%c("Ifng","Socs1","Stat1","Tap1","Tap2","Cd274","Pdcd1","Havcr2","Lag3","Cd8a"),]
+x$group <- sapply(x$GeneName,gene_groupa)
+
+
+
+x <- reshape2::melt(x,id.vars=c("GeneName","FeatureNum","group"))
+x$day <- sapply(x$variable, function(s) unlist(strsplit(as.character(s),split="_"))[2])
+x$treatment <- sapply(x$variable, function(s) unlist(strsplit(as.character(s),split="_"))[1])
+
+
+
+plt_1 <- x
+
+
+cyt_mean <- aggregate(x["value"],by=x[c("day","treatment","GeneName")],mean)
+cyt_sd <- aggregate(x["value"],by=x[c("day","treatment","GeneName")],sd)
+mrna_dat <- cbind(cyt_mean,sd=cyt_sd$value)
+names(mrna_dat)[names(mrna_dat)=="value"] <- "mean"
+
+rescale_mrna <- function(i, mrna_dat){
+  d <- mrna_dat$day[i]
+  t <- mrna_dat$treatment[i]
+  g <- mrna_dat$GeneName[i]
+  v <- mrna_dat$mean[i]
+  
+  x <- mrna_dat[(mrna_dat$treatment==t&mrna_dat$GeneName==g),]
+  u <- mrna_dat[(mrna_dat$treatment=="Untreated"&mrna_dat$GeneName==g),"mean"]
+  u <- mean(u)
+  
+  #previous min/max scaling:
+  #scaled_dat <- (v-min(x$mean))/(max(x$mean)-min(x$mean))
+  #new scaling where we just "subtract background"
+  scaled_dat <- v-min(x$mean)#(v-min(x$mean))/(max(x$mean)-min(x$mean))
+  ## new definition of background is the day 3 value..
+  
+  #tbh might as well just zero the data - we were doing that previously after all
+  #...although we will get 0 sd...
+  ## ... not if we don't fit the first data point!!
+  ###... so perhaps better to stick with background subtraction - then at least we get negative sd, which works!
+  
+  return(scaled_dat)
+  
+}
+
+mrna_dat$scale <- sapply(1:nrow(mrna_dat),rescale_mrna,mrna_dat)
+plt_2 <- mrna_dat
+
+p3a <- ggplot(subset(plt_1,treatment%in%c("CTL","Untreated")&GeneName%in%c("Cd8a","Ifng","Socs1","Stat1")),aes(x=as.numeric(day)))+
+  facet_grid(rows=vars(GeneName),cols=vars(treatment),scales="free")+
+  geom_line(data=subset(plt_2,treatment%in%c("CTL","Untreated")&GeneName%in%c("Cd8a","Ifng","Socs1","Stat1")),aes(y=mean),color="grey")+
+  geom_point(data=subset(plt_2,treatment%in%c("CTL","Untreated")&GeneName%in%c("Cd8a","Ifng","Socs1","Stat1")),aes(y=mean),size=3)+  
+  geom_jitter(aes(y=value),height=0,width=0.5,color="red")+
+ geom_errorbar(data=subset(plt_2,treatment%in%c("CTL","Untreated")&GeneName%in%c("Cd8a","Ifng","Socs1","Stat1")),aes(ymin=mean-sd,ymax=mean+sd))+
+  theme_classic(base_size=12)+
+  scale_y_continuous("normalised mRNA expression")+
+  scale_x_continuous("day after CTL transfer",breaks=c(1,3,5,7))
+p3a
+
+
+p3b <- ggplot(subset(plt_1,treatment%in%c("CTL","Untreated")&GeneName%in%c("Cd274","Pdcd1","Havcr2","Lag3")),aes(x=as.numeric(day)))+
+  facet_grid(rows=vars(GeneName),cols=vars(treatment),scales="free")+
+  geom_line(aes(y=value),color="grey")+
+  geom_point(aes(y=value),color="black",size=3)+
+  geom_jitter(aes(y=value),width=0.5,color="red")+
+  theme_classic(base_size=12)+
+  scale_y_continuous("normalised mRNA expression")+
+  scale_x_continuous("day after CTL transfer",breaks=c(1,3,5,7))
+p3b
+
+```
+
+```{r}
+
+names(mrna_dat)[names(mrna_dat)=="mean"] <- "value"
+ifn_dat <- mrna_dat[mrna_dat$treatment=="CTL"&mrna_dat$GeneName=="Ifng",c("day","value","sd","scale")]
+pdl1_dat <- mrna_dat[mrna_dat$treatment=="CTL"&mrna_dat$GeneName=="Cd274",c("day","value","sd","scale")]
+pd1_dat <- mrna_dat[mrna_dat$treatment=="CTL"&mrna_dat$GeneName=="Pdcd1",c("day","value","sd","scale")]
+icam1_dat <- mrna_dat[mrna_dat$treatment=="CTL"&mrna_dat$GeneName=="Icam1",c("day","value","sd","scale")]
+lag_dat <- mrna_dat[mrna_dat$treatment=="CTL"&mrna_dat$GeneName=="Lag3",c("day","value","sd","scale")]
+tim_dat <- mrna_dat[mrna_dat$treatment=="CTL"&mrna_dat$GeneName=="Havcr2",c("day","value","sd","scale")]
+
+saveRDS(ifn_dat,"PAR_EST/ifn_dat.Rds")
+saveRDS(lag_dat,"PAR_EST/lag_dat.Rds")
+saveRDS(tim_dat,"PAR_EST/tim_dat.Rds")
+saveRDS(pd1_dat,"PAR_EST/pd1_dat.Rds")
+saveRDS(pdl1_dat,"PAR_EST/pdl1_dat.Rds")
+
+```
+
+
+

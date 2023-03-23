@@ -1,0 +1,245 @@
+---
+title: "data analysis"
+author: "R.J. Beck"
+date: "17/08/2020"
+output: html_document
+---
+
+Code to reproduce Fig 2 (tumour volume growth) and assoc. supplementary figure (S1).
+Note that path should be changed in chunk below for code to run
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_knit$set(root.dir="path/to/LAG_TIM_BIOMARKERS/")
+require(ggplot2)
+library(bbmle)
+
+```
+
+
+```{r}
+g.rates <- function(uid,growth.data){
+  df <- growth.data[growth.data$uid==uid,]
+  ratios <- df$vol[-1]/df$vol[-length(df$vol)] ## tumour volume ratio between timepoints
+  t1 <- df$day[-nrow(df)] # intervals beginning...
+  t2 <- df$day[-1] # ... ending
+  tmid <- (t1+t2)/2 ## midpoint time of measurements
+  v1 <- df$vol[-nrow(df)] # intervals beginning...
+  v2 <- df$vol[-1] # ... ending
+  vmid <- (v1+v2)/2 ## midpoint time of measurements
+  
+  dt <- t2-t1 ## lenght of intervals
+  g <- log(ratios)/dt ## growth rate estimate
+  data.frame(ratios=ratios, g=g, dt=dt, t1=t1, tmid=tmid,t2=t2,v1=v1,v2=v2,vmid=vmid, mouse=rep(df$mouse,length(t1)),fig=rep(df$fig[1],length(t1)),
+             condition= rep(df$condition[1],length(t1)))
+}
+
+
+```
+
+Fitting procedure which gives g=0.4
+```{r}
+require(minpack.lm)
+
+ssq <- function(par,x){
+  
+  X <- x$day
+  Y <- x$vol
+  
+  errs <- log(Y)-log(par[1]*exp(par[2]*X))
+  return(errs)
+
+}
+
+vols <- read.csv("TUMOUR_VOLUMES/volume.csv")
+x <- subset(vols,condition=="untreated")
+pars <- runif(2)
+#fitval=nls.lm(par=pars,fn=ssq,x=subset(x,fig==2))
+#fitval=nls.lm(par=pars,fn=ssq,x=subset(x,fig==1))
+fitval=nls.lm(par=pars,fn=ssq,x=x)
+summary(fitval)
+```
+
+```{r}
+vols <- read.csv("TUMOUR_VOLUMES/volume.csv")
+vols$uid <- interaction(vols$mouse,vols$condition,vols$fig)
+mice <- unique(vols$uid)
+df <- do.call(rbind,lapply(mice,g.rates,growth.data=vols))
+
+g_stat <- aggregate(df[c("g")],by=df[c("condition","tmid")],mean)
+g_sd <- aggregate(df[c("g")],by=df[c("condition","tmid")],sd)
+g_stat$sd <- g_sd$g
+p_vol <- ggplot(vols,aes(x=day,y=vol,group=interaction(condition,mouse,fig),color=as.character(fig)))+
+  facet_grid(rows=vars(condition))+
+  geom_point()+
+  geom_line()+
+  theme_bw(base_size=20)+
+  scale_y_log10(expression(tumour~volume~mm^3))+
+  scale_x_continuous("day after treatment (if applicable...?)",breaks=c(-1,1,3,5,7))+
+  scale_color_discrete("fig in npaper")
+p_vol
+
+p_gro <- ggplot(df,aes(x=tmid,y=g))+
+    facet_grid(rows=vars(condition))+
+  geom_point(aes(group=interaction(condition,mouse,fig),color=as.character(fig)))+
+  geom_point(data=g_stat)+
+  geom_errorbar(data=g_stat,aes(ymin=g-sd,ymax=g+sd))+
+  geom_hline(aes(yintercept=0.4))+
+ # geom_line(aes(y=21*exp((day+1)*0.43)),size=3)+
+  theme_classic(base_size=14)+
+  scale_y_continuous(expression(tumour~growth~(day^-1)))+
+  scale_x_continuous("day after CTL transfer",breaks=c(0,2,4,6))#+
+  #scale_color_manual("fig in \npaper",values = c("red","green"))
+p_gro
+
+mean(vols$vol[vols$day==-1&vols$condition=="ctl"])
+mean(vols$vol[vols$day==-1&vols$condition=="untreated"])
+
+
+v_dat <- g_stat[g_stat$condition=="ctl"&g_stat$tmid!=0.5,2:4]
+names(v_dat) <- c("day","value","sd")
+v_dat$scale <- (v_dat$value-min(v_dat$value))/(max(v_dat$value)-min(v_dat$value))
+```
+
+```{r}
+
+
+p2a <- ggplot(subset(vols,condition=="untreated"),aes(x=day,y=vol))+
+    geom_line(aes(y=23.7*exp((day+1)*0.4)),size=2)+
+  geom_point(aes(group=interaction(condition,mouse,fig),color=as.character(fig)),show.legend = FALSE)+
+  geom_line(aes(group=interaction(condition,mouse,fig),color=as.character(fig)),show.legend = FALSE)+
+  #geom_line(aes(group=interaction(condition,mouse,fig),color=as.character(fig)))+
+
+  scale_y_log10(expression(tumour~volume~(mm^3)))+
+    theme_classic(base_size=12)+
+  scale_x_continuous("day",breaks=c(-1,1,3,5,7))+
+  scale_color_manual("fig in \npaper",values = c("red","green"))
+p2a
+
+p2b <- ggplot(subset(vols,condition=="ctl"),aes(x=day,y=vol))+
+     geom_line(aes(y=23.7*exp((day+1)*0.4)),size=2)+
+  geom_point(aes(group=interaction(condition,mouse,fig),color=as.character(fig)),show.legend = FALSE)+
+    geom_line(aes(group=interaction(condition,mouse,fig),color=as.character(fig)),show.legend = FALSE)+
+  #geom_line(aes(group=interaction(condition,mouse,fig),color=as.character(fig)))+
+
+  theme_classic(base_size=12)+
+  scale_y_log10(expression(tumour~volume~(mm^3)))+
+  scale_x_continuous("day",breaks=c(-1,1,3,5,7,10,14))+
+  scale_color_manual("fig in \npaper",values = c("red","green","blue"))
+p2b
+
+p2c <- ggplot(subset(df,condition=="untreated"),aes(x=tmid,y=g))+
+    geom_hline(aes(yintercept=0.4),size=2)+
+  geom_point(aes(group=interaction(condition,mouse,fig),color=as.character(fig)))+
+  geom_point(data=subset(g_stat,condition=="untreated"),size=3)+
+  geom_errorbar(data=subset(g_stat,condition=="untreated"),aes(ymin=g-sd,ymax=g+sd))+
+
+ # geom_line(aes(y=21*exp((day+1)*0.43)),size=3)+
+  theme_classic(base_size=12)+
+  scale_y_continuous(expression(tumour~growth~(day^-1)))+
+  scale_x_continuous("day",breaks=c(0,2,4,6))+
+  scale_color_manual("experiment",values = c("red","green"),labels=1:2)
+p2c
+
+p2d <- ggplot(subset(df,condition=="ctl"),aes(x=tmid,y=g))+
+      geom_hline(aes(yintercept=0.4),size=2)+
+  geom_point(aes(color=as.character(fig)))+
+#  geom_line(aes(group=interaction(condition,mouse,fig),color=as.character(fig)))+
+ # geom_line(aes(y=21*exp((day+1)*0.43)),size=3)+
+  theme_classic(base_size=12)+
+
+  geom_point(data=subset(g_stat,condition=="ctl"),size=3)+
+  geom_errorbar(data=subset(g_stat,condition=="ctl"),aes(ymin=g-sd,ymax=g+sd))+
+  scale_y_continuous(expression(tumour~growth~(day^-1)))+
+  scale_x_continuous("day",breaks=c(0,2,4,6,8.5,12.5))+
+  scale_color_manual("experiment",values = c("red","green","blue"),labels=1:3)
+p2d
+
+
+
+```
+
+Calculating growth rate for individual untreated mice:
+
+
+
+```{r}
+
+ll_pm <- function(gi,par,xi){
+  pred <- par[1]*exp(gi*xi$day)
+  errs <- log(xi$vol)-log(pred)
+  -sum(dnorm(errs,mean=0,sd=par[4],log=T))-dnorm(gi,mean=par[2],sd=par[3],log=T)
+}
+
+wrap_ll_pm <- function(par,x){
+  par <- abs(par)
+  ll <- sapply(x, function(xi){
+    opti <- optimise(ll_pm,interval=c(0,1),par=par,xi=xi)
+    opti$objective
+  })
+  sum(ll)
+}
+
+unwrap_ll_pm <- function(par,x){
+  par <- abs(par)
+  g <- sapply(x, function(xi){
+    opti <- optimise(ll_pm,interval=c(0,1),par=par,xi=xi)
+    opti$minimum
+  })
+  return(g)
+}
+
+x <- subset(vols,condition=="untreated")
+xdf <- x
+x <- split(x,f=interaction(x$mouse,x$fig))
+
+p0 <- c(50,0.4,1,0.2)
+opt <- optim(p0,wrap_ll_pm,x=x)
+par <- abs(opt$par)
+g <- unwrap_ll_pm(par,x)
+g_range <- seq(0,1,0.01)
+dfg <- data.frame(g=g_range,p = dnorm(g_range,mean=par[2],sd=par[3]))
+days <- seq(-1,7,0.1)
+ydf <- do.call(rbind,lapply(1:length(g), function(i){
+  data.frame(day=days,vol=par[1]*exp(g[i]*days),uid=x[[i]]$uid[1])
+}))
+
+gdis <- data.frame(g=g)
+
+pb <- ggplot(dfg,aes(x=g))+
+  geom_histogram(data=gdis,binwidth = 0.05,fill="grey90",color="black")+
+  geom_line(aes(x=g,y=p))+
+  scale_x_continuous(expression(growth~rate~g~(day^-1)))+
+  scale_y_continuous("probability density",
+                     sec.axis = sec_axis( trans=~.*1, name="number of mice"))+
+  theme_classic()
+pb
+
+xdf$facet.heading <- paste0("expt. ",xdf$fig,"\nmouse ",xdf$mouse)
+ydf$mouse <- sapply(as.character(ydf$uid), function(xi) unlist(strsplit(xi,split="[.]"))[1])
+ydf$fig <- sapply(as.character(ydf$uid), function(xi) unlist(strsplit(xi,split="[.]"))[3])
+ydf$facet.heading <- paste0("expt. ",ydf$fig,"\nmouse ",ydf$mouse)
+
+
+pa <- ggplot(xdf,aes(x=day,y=vol))+
+  facet_wrap(~facet.heading,nrow=2)+
+  geom_point()+
+  geom_line(data=ydf)+
+  scale_y_log10(expression(volume~(mm^3)))+
+  scale_x_continuous("day",breaks=seq(0,6,2))+
+  theme_classic()
+pa
+
+as.numeric(round(g,digits=2))
+
+sfig_nlme <- cowplot::plot_grid(pa,pb,nrow=1,rel_widths = c(3,2),labels=c("A","B"))
+
+```
+
+```{r}
+saveRDS(v_dat,"PAR_EST/v_dat.Rds")
+
+```
+
+
+

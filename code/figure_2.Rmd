@@ -5,7 +5,7 @@ date: "17/08/2020"
 output: html_document
 ---
 
-Code to reproduce Fig 2 (tumour volume growth) and assoc. supplementary figure (S1).
+Code to reproduce Fig 2 (tumour volume growth) and assoc. supplementary figure (S1). The outputs of the volume analysis are also stored for use in downstream figures. 
 Note that path should be changed in chunk below for code to run
 
 ```{r setup, include=FALSE}

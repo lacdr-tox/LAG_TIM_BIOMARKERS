@@ -10,7 +10,7 @@ This file reproduces subpanels from figure 1 (Note the path should be changed in
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = FALSE)
-knitr::opts_knit$set(root.dir="~/05_phd/02_CTLcomms/LAG_TIM_BIOMARKERS/")
+knitr::opts_knit$set(root.dir="path/toLAG_TIM_BIOMARKERS/")
 require(ggplot2)
 
 

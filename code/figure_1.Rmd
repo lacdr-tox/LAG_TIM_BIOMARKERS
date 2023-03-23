@@ -6,21 +6,22 @@ output: html_document
 ---
 
 
-
+This file reproduces subpanels from figure 1 (Note the path should be changed in the first chunk). The outputs of the image analysis are also stored for use in downstream figures. 
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = FALSE)
-knitr::opts_knit$set(root.dir="path/to/LAG_TIM_BIOMARKERS/")
+knitr::opts_knit$set(root.dir="~/05_phd/02_CTLcomms/LAG_TIM_BIOMARKERS/")
 require(ggplot2)
 
 
 ```
 
-Following is results of my image analysis:
-```{R}
-setwd("IMAGE_ANALYSIS/Exp16_merged_training/cropped_ims_results")
+Comparison of manual vs ilastik counts on cropped images.
 
-x <- read.csv("manual_counts.csv")
+To reproduce the Ilastik counts one needs to run each Ilastik classifier (in /code/Ilastik_classifiers) separately. One can do this by opening each classifier, it will not be able to find the input files and will prompt you to give the location of each required file(they are in data/IMAGE_ANALYSIS/Exp16_merged_training/cropped_ims). Change the export path in the density estimation step to data/IMAGE_ANALYSIS/Exp16_merged_training/cropped_ims_results/ then hit export all. (tested with Ilastik-1.40rc6). The Ilastik counts were included together with manual counts on the same images and save in manual_counts.csv 
+```{R}
+
+x <- read.csv("data/IMAGE_ANALYSIS/Exp16_merged_training/cropped_ims_results/manual_counts.csv")
 
 y <- x[,c("image","green","green_ilastik")]
 y$color<-"green"
@@ -45,6 +46,7 @@ p1b <- ggplot(x,aes(x=manual,y=ilastik,color=color,shape=color))+
 p1b
 ```
 
+Results of applying the classifier to all the full sized images. To reproduce the Ilastik results one needs to run each classifier in batch mode on all the images in data/IMAGE_ANALYSIS/Exp16_merged. Note all the filepaths for the training data and the output filepaths will need to be updated (similar to instructions given above previous code chunk)
 ```{r}
 
 require(ggplot2)
@@ -129,7 +131,7 @@ p1e
 
 df <-df[order(as.numeric(df$mouse),df$field),]
 ```
-
+CTLs were manually counted.
 ```{r}
 ctl <- read.csv("IMAGE_ANALYSIS/ctl.csv")
 
